@@ -129,7 +129,7 @@ print(df_clean.info())
 processed_dir = Path("data/processed")
 processed_dir.mkdir(parents=True, exist_ok=True)
 
-clean_csv_path = processed_dir / "clean_user_behavior.csv"
+clean_csv_path = processed_dir / "Clean_User_Behavior.csv"
 
 df_clean.to_csv(
     clean_csv_path,

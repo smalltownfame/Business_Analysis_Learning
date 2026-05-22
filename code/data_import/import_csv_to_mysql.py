@@ -10,7 +10,7 @@ from sqlalchemy import text
 BASE_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(BASE_DIR))
 
-from database.mysql_connection import (
+from database.MySql_Connection import (
     create_database,
     create_database_engine,
     create_mysql_server_engine,
