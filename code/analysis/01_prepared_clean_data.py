@@ -2,10 +2,7 @@ from pathlib import Path
 import pandas as pd
 
 
-# =========================
 # 1. 读取 CSV
-# =========================
-
 csv_path = "data/raw/data_min.csv"
 df = pd.read_csv(csv_path)
 
@@ -16,10 +13,7 @@ print("\n字段信息：")
 print(df.info())
 
 
-# =========================
 # 2. 数据质量检查
-# =========================
-
 expected_columns = [
     "user_id",
     "item_id",
@@ -48,10 +42,7 @@ print("\nbehavior_type 分布：")
 print(df["behavior_type"].value_counts(dropna=False))
 
 
-# =========================
 # 3. 数据清洗与字段转换
-# =========================
-
 # 用户行为字段 behavior_type 应只包含：
 # 1 = 浏览(pv), 2 = 收藏(fav), 3 = 加购物车(cart), 4 = 购买(buy)
 df["behavior_type"] = pd.to_numeric(
@@ -122,10 +113,7 @@ print("\n清洗后字段信息：")
 print(df_clean.info())
 
 
-# =========================
 # 4. 保存清洗后的数据
-# =========================
-
 processed_dir = Path("data/processed")
 processed_dir.mkdir(parents=True, exist_ok=True)
 
