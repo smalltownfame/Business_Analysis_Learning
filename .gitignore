@@ -13,3 +13,4 @@ data/raw/*.csv
 
 # Python
 __pycache__/
+*.pyc
