@@ -51,7 +51,6 @@ if missing_env_vars:
 csv_path = "data/raw/data_min.csv"
 df = pd.read_csv(csv_path)
 
-
 print("数据前5行：")
 print(df.head())
 
