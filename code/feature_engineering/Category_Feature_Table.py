@@ -25,6 +25,8 @@ df["weekday"] = df["timestamp"].dt.weekday   # 0=周一，6=周日
 # 3. 行为类型映射
 # =========================
 
+# 原始数据中 behavior_type 使用数字编码
+# 1 = pv 浏览；2 = fav 收藏；3 = cart 加购；4 = buy 购买
 behavior_map = {
     1: "pv",
     2: "fav",
@@ -349,12 +351,12 @@ print(category_feature.describe())
 # 13. 输出类目中间表
 # =========================
 
-output_path = Path("data/intermediate_tables/Category_Feature_Table.csv")
+output_path = Path("data/intermediate_tables/Category_Feature_Table.parquet")
 
-category_feature.to_csv(
+category_feature.to_parquet(
     output_path,
     index=False,
-    encoding="utf-8-sig"
+    engine="pyarrow"
 )
 
 print(f"\n类目中间表已保存至：{output_path}")

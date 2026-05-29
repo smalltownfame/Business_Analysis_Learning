@@ -25,11 +25,11 @@ df["weekday"] = df["timestamp"].dt.weekday   # 0=周一，6=周日
 
 # 行为类型映射：
 # 原始数据中 behavior_type 使用数字编码
-# 1 = pv 浏览；2 = cart 加购；3 = fav 收藏；4 = buy 购买
+# 1 = pv 浏览；2 = fav 收藏；3 = cart 加购；4 = buy 购买
 behavior_map = {
     1: "pv",
-    2: "cart",
-    3: "fav",
+    2: "fav",
+    3: "cart",
     4: "buy"
 }
 
@@ -722,35 +722,53 @@ user_feature = user_feature.merge(
     how="left"
 )
 
-
 # first_buy_interval：
-# 首次浏览到首次购买间隔，单位：小时
-first_pv_time = (
-    df_sorted[df_sorted["behavior_type"] == "pv"]
-    .groupby("user_id")["timestamp"]
-    .min()
-    .reset_index(name="first_pv_time")
+# 首次购买商品在购买前最近一次浏览到购买的间隔，单位：小时
+# 只匹配同一 user_id + item_id，并要求浏览时间早于或等于购买时间
+
+pv_records = df_sorted[df_sorted["behavior_type"] == "pv"][
+    ["user_id", "item_id", "timestamp"]
+].rename(columns={"timestamp": "pv_time"})
+
+buy_records = df_sorted[df_sorted["behavior_type"] == "buy"][
+    ["user_id", "item_id", "timestamp"]
+].rename(columns={"timestamp": "buy_time"})
+
+pv_buy_match = pv_records.merge(
+    buy_records,
+    on=["user_id", "item_id"],
+    how="inner"
 )
 
-first_buy_time = (
-    df_sorted[df_sorted["behavior_type"] == "buy"]
-    .groupby("user_id")["timestamp"]
-    .min()
-    .reset_index(name="first_buy_time")
-)
+pv_buy_match = pv_buy_match[
+    pv_buy_match["pv_time"] <= pv_buy_match["buy_time"]
+]
 
-buy_interval = first_pv_time.merge(
-    first_buy_time,
-    on="user_id",
-    how="left"
-)
-
-buy_interval["first_buy_interval"] = (
-    buy_interval["first_buy_time"] - buy_interval["first_pv_time"]
+pv_buy_match["pv_to_buy_hours"] = (
+    pv_buy_match["buy_time"] - pv_buy_match["pv_time"]
 ).dt.total_seconds() / 3600
 
+# 对每次购买，取购买前最近一次浏览
+pv_buy_match = (
+    pv_buy_match
+    .sort_values(["user_id", "item_id", "buy_time", "pv_time"])
+    .drop_duplicates(
+        subset=["user_id", "item_id", "buy_time"],
+        keep="last"
+    )
+)
+
+# 每个用户取首次购买对应的浏览-购买间隔
+first_buy_interval = (
+    pv_buy_match
+    .sort_values(["user_id", "buy_time"])
+    .drop_duplicates("user_id")
+    [["user_id", "pv_to_buy_hours"]]
+    .rename(columns={"pv_to_buy_hours": "first_buy_interval"})
+)
+
 user_feature = user_feature.merge(
-    buy_interval[["user_id", "first_buy_interval"]],
+    first_buy_interval,
     on="user_id",
     how="left"
 )
@@ -784,32 +802,44 @@ user_feature = user_feature.merge(
 )
 
 
-# repeat_view_before_buy：
-# 首次购买前的浏览次数，用于衡量购买前浏览深度
+# view_before_first_buy_cnt：
+# 用户首次购买之前累计发生的浏览行为次数（PV）
+# 用于衡量用户在首次成交前的信息搜寻深度
+
+first_buy_time = (
+    df_sorted[df_sorted["behavior_type"] == "buy"]
+    .groupby("user_id")["timestamp"]
+    .min()
+    .reset_index(name="first_buy_time")
+)
+
 df_with_first_buy = df_sorted.merge(
     first_buy_time,
     on="user_id",
     how="left"
 )
 
-repeat_view_before_buy = (
+view_before_first_buy_cnt = (
     df_with_first_buy[
         (df_with_first_buy["behavior_type"] == "pv")
-        & (df_with_first_buy["timestamp"] < df_with_first_buy["first_buy_time"])
+        & (
+            df_with_first_buy["timestamp"]
+            < df_with_first_buy["first_buy_time"]
+        )
     ]
     .groupby("user_id")
     .size()
-    .reset_index(name="repeat_view_before_buy")
+    .reset_index(name="view_before_first_buy_cnt")
 )
 
 user_feature = user_feature.merge(
-    repeat_view_before_buy,
+    view_before_first_buy_cnt,
     on="user_id",
     how="left"
 )
 
-user_feature["repeat_view_before_buy"] = (
-    user_feature["repeat_view_before_buy"]
+user_feature["view_before_first_buy_cnt"] = (
+    user_feature["view_before_first_buy_cnt"]
     .fillna(0)
     .astype(int)
 )
@@ -1329,14 +1359,60 @@ user_feature["user_maturity_stage"] = user_feature.apply(
 )
 
 
-# retention_score：
-# 留存行为综合评分 = 活跃天数分位得分 + 最大连续活跃天数分位得分 + 最近7天行为分位得分 - 沉默时长分位得分
-# 分数越高，说明用户留存倾向越强
+# =========================
+# 留存评分（Retention Score）
+# =========================
+# 评分逻辑：
+# 1. active_days（活跃天数）越高越好
+# 2. max_consecutive_active_days（最大连续活跃天数）越高越好
+# 3. recent_7d_behavior_cnt（最近7天行为数）越高越好
+# 4. inactive_gap_days（距离最近一次活跃的沉默天数）越低越好
+#
+# 所有指标先转换为百分位得分（0~1）
+# 再进行加权求和
+#
+# 最终 retention_score 取值范围：
+# 0 ~ 100
+#
+# 分数越高：
+# 代表用户越活跃、留存倾向越强
+#
+# 分数越低：
+# 代表用户存在流失风险
+
+active_rank = (
+    user_feature["active_days"]
+    .rank(pct=True)
+)
+
+consecutive_rank = (
+    user_feature["max_consecutive_active_days"]
+    .rank(pct=True)
+)
+
+recent_rank = (
+    user_feature["recent_7d_behavior_cnt"]
+    .rank(pct=True)
+)
+
+# 沉默天数越小越好，因此反向计分
+inactive_score = 1 - (
+    user_feature["inactive_gap_days"]
+    .rank(pct=True)
+)
+
+# 加权综合评分
 user_feature["retention_score"] = (
-    user_feature["active_days"].rank(pct=True)
-    + user_feature["max_consecutive_active_days"].rank(pct=True)
-    + user_feature["recent_7d_behavior_cnt"].rank(pct=True)
-    - user_feature["inactive_gap_days"].rank(pct=True)
+      0.35 * active_rank
+    + 0.25 * consecutive_rank
+    + 0.25 * recent_rank
+    + 0.15 * inactive_score
+) * 100
+
+# 保留两位小数
+user_feature["retention_score"] = (
+    user_feature["retention_score"]
+    .round(2)
 )
 
 
@@ -1452,7 +1528,7 @@ ordered_cols = [
     "impulsive_buy_flag",
     "low_conversion_flag",
     "hesitation_score",
-    "repeat_view_before_buy",
+    "view_before_first_buy_cnt",
     "repeat_view_without_buy",
     "long_cart_no_buy_flag",
     "high_pv_low_buy_flag",
@@ -1503,14 +1579,16 @@ print(user_feature.describe())
 # 20. 输出中间表
 # =========================
 
-user_feature_path = Path(
-    "data/intermediate_tables/User_Feature_Table.csv"
-)
+# =========================
+# 20. 输出中间表
+# =========================
 
-user_feature.to_csv(
+user_feature_path = Path("data/intermediate_tables/User_Feature_Table.parquet")
+
+user_feature.to_parquet(
     user_feature_path,
     index=False,
-    encoding="utf-8-sig"
+    engine="pyarrow"
 )
 
 print(f"\n用户中间表已保存至：{user_feature_path}")
