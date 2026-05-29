@@ -1,6 +1,7 @@
 # Data files
 data/raw/*.csv
 data/processed/*.csv
+data/intermediate_tables/*.csv
 
 # Environment
 .env
